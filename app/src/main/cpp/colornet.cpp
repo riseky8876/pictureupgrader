@@ -7,15 +7,16 @@
 #include <omp.h>
 #include <include/colornet.h>
 
+// NOTE: This file is compiled with -fno-rtti (see CMakeLists.txt).
+// ncnn::Layer's typeinfo has hidden visibility inside libncnn.a, so RTTI-based
+// subclassing would cause "undefined symbol: typeinfo for ncnn::Layer" at link time.
+// Without RTTI, no typeinfo is generated and the link succeeds.
 class Sig17Slice : public ncnn::Layer
 {
 public:
     Sig17Slice() {
         one_blob_only = true;
     }
-
-    // Fix: explicit virtual destructor so RTTI typeinfo is emitted
-    virtual ~Sig17Slice() {}
 
     int forward(const ncnn::Mat& bottom_blob, ncnn::Mat& top_blob, const ncnn::Option& opt) const override {
         int w = bottom_blob.w;
@@ -67,38 +68,25 @@ int colorization(const cv::Mat &bgr, const cv::Mat &out_image, const std::string
     if (net.load_model((model_path +
         "/siggraph17_color_sim.bin").c_str())) return -1;
     Base_img = bgr.clone();
-    // normalize levels
     Base_img.convertTo(Base_img, CV_32F, 1.0 / 255);
-    // Convert BGR to LAB color space format
     cvtColor(Base_img, lab, cv::COLOR_BGR2Lab);
-    // Extract L channel
     cv::extractChannel(lab, L, 0);
-    // Resize to input shape 256x256
     resize(L, input_img, cv::Size(W_in, H_in));
-    // convert to NCNN::MAT
     ncnn::Mat in_LAB_L(input_img.cols, input_img.rows, 1, (void *)input_img.data);
     in_LAB_L = in_LAB_L.clone();
     ncnn::Extractor ex = net.create_extractor();
-    // set input, output layers
     ex.input("input", in_LAB_L);
-    // inference network
     ncnn::Mat out;
     ex.extract("out_ab", out);
-    // create LAB material
     cv::Mat colored_LAB(out.h, out.w, CV_32FC2);
-    // Extract ab channels from ncnn:Mat out
     memcpy((uchar *)colored_LAB.data, out.data, out.w * out.h * 2 * sizeof(float));
-    // get separated LAB channels a&b
     cv::Mat a(out.h, out.w, CV_32F, (float *)out.data);
     cv::Mat b(out.h, out.w, CV_32F, (float *)out.data + out.w * out.h);
-    // Resize a, b channels to original image size
     cv::resize(a, a, Base_img.size());
     cv::resize(b, b, Base_img.size());
-    // merge channels, and convert back to BGR
     cv::Mat color, chn[] = {L, a, b};
     cv::merge(chn, 3, lab);
     cvtColor(lab, color, cv::COLOR_Lab2BGR);
-    //normalize values to 0->255
     color.convertTo(color, CV_8UC3, 255);
     color.copyTo(out_image);
     return 0;
