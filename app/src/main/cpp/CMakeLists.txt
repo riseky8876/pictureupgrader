@@ -13,17 +13,17 @@ find_package(OpenCV REQUIRED)
 set(ncnn_DIR ${CMAKE_SOURCE_DIR}/ncnn-custom-android-vulkan/${ANDROID_ABI}/lib/cmake/ncnn)
 find_package(ncnn REQUIRED)
 
-# Set key properties
-# NOTE: -fvisibility=hidden is intentionally removed — it breaks typeinfo linkage
-# for classes that extend ncnn::Layer (e.g. Sig17Slice in colornet.cpp).
-# The ncnn static library exports typeinfo with default visibility; our subclasses
-# must match that visibility or the linker cannot resolve "typeinfo for ncnn::Layer".
+# NOTE: libncnn.a is compiled with -fvisibility=hidden, which hides typeinfo for
+# ncnn::Layer. Any file that subclasses ncnn::Layer with RTTI enabled will fail to
+# link with "undefined symbol: typeinfo for ncnn::Layer".
+# Fix: compile with -fno-rtti globally (matches how ncnn itself is built),
+# and use set_source_files_properties to enforce -fno-rtti on colornet.cpp.
 set_target_properties(
     ncnn PROPERTIES
-    INTERFACE_COMPILE_OPTIONS "-frtti;-fexceptions"
+    INTERFACE_COMPILE_OPTIONS "-fexceptions"
 )
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -frtti -fexceptions -fopenmp -Os -ffunction-sections -fdata-sections -w -Wl,--gc-sections")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -frtti -fopenmp -Os -ffunction-sections -fdata-sections -w -Wl,--gc-sections")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti -fexceptions -fopenmp -Os -ffunction-sections -fdata-sections -fvisibility=hidden -w -Wl,--gc-sections")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fopenmp -Os -ffunction-sections -fdata-sections -fvisibility=hidden -w -Wl,--gc-sections")
 if (DEFINED ANDROID_NDK_MAJOR AND ${ANDROID_NDK_MAJOR} GREATER 20)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static-openmp")
 endif ()
