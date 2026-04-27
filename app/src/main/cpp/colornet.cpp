@@ -1,5 +1,8 @@
-#include <iostream>
-#include <iomanip>
+// NOTE: This file is intentionally compiled with -fno-rtti (see CMakeLists.txt).
+// libncnn.a is built with -fvisibility=hidden, which hides typeinfo for ncnn::Layer.
+// Compiling with -frtti here would generate typeinfo for Sig17Slice that references
+// ncnn::Layer's hidden typeinfo -> linker error "undefined symbol: typeinfo for ncnn::Layer".
+// With -fno-rtti, no typeinfo is generated and linking succeeds.
 #include <cstdio>
 #include <vector>
 #include <net.h>
@@ -7,10 +10,6 @@
 #include <omp.h>
 #include <include/colornet.h>
 
-// NOTE: This file is compiled with -fno-rtti (see CMakeLists.txt).
-// ncnn::Layer's typeinfo has hidden visibility inside libncnn.a, so RTTI-based
-// subclassing would cause "undefined symbol: typeinfo for ncnn::Layer" at link time.
-// Without RTTI, no typeinfo is generated and the link succeeds.
 class Sig17Slice : public ncnn::Layer
 {
 public:
@@ -45,7 +44,6 @@ public:
                     outptr += 1;
                     ptr += 2;
                 }
-
                 ptr += w;
             }
         }
@@ -63,10 +61,8 @@ int colorization(const cv::Mat &bgr, const cv::Mat &out_image, const std::string
     const int W_in = 256;
     const int H_in = 256;
     cv::Mat Base_img, lab, L, input_img;
-    if (net.load_param((model_path +
-        "/siggraph17_color_sim.param").c_str())) return -1;
-    if (net.load_model((model_path +
-        "/siggraph17_color_sim.bin").c_str())) return -1;
+    if (net.load_param((model_path + "/siggraph17_color_sim.param").c_str())) return -1;
+    if (net.load_model((model_path + "/siggraph17_color_sim.bin").c_str())) return -1;
     Base_img = bgr.clone();
     Base_img.convertTo(Base_img, CV_32F, 1.0 / 255);
     cvtColor(Base_img, lab, cv::COLOR_BGR2Lab);
