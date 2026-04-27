@@ -14,6 +14,9 @@ public:
         one_blob_only = true;
     }
 
+    // Fix: explicit virtual destructor so RTTI typeinfo is emitted
+    virtual ~Sig17Slice() {}
+
     int forward(const ncnn::Mat& bottom_blob, ncnn::Mat& top_blob, const ncnn::Option& opt) const override {
         int w = bottom_blob.w;
         int h = bottom_blob.h;
@@ -76,7 +79,7 @@ int colorization(const cv::Mat &bgr, const cv::Mat &out_image, const std::string
     ncnn::Mat in_LAB_L(input_img.cols, input_img.rows, 1, (void *)input_img.data);
     in_LAB_L = in_LAB_L.clone();
     ncnn::Extractor ex = net.create_extractor();
-    // set input, output lyers
+    // set input, output layers
     ex.input("input", in_LAB_L);
     // inference network
     ncnn::Mat out;
@@ -85,7 +88,7 @@ int colorization(const cv::Mat &bgr, const cv::Mat &out_image, const std::string
     cv::Mat colored_LAB(out.h, out.w, CV_32FC2);
     // Extract ab channels from ncnn:Mat out
     memcpy((uchar *)colored_LAB.data, out.data, out.w * out.h * 2 * sizeof(float));
-    // get separsted LAB channels a&b
+    // get separated LAB channels a&b
     cv::Mat a(out.h, out.w, CV_32F, (float *)out.data);
     cv::Mat b(out.h, out.w, CV_32F, (float *)out.data + out.w * out.h);
     // Resize a, b channels to original image size
