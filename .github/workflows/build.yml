@@ -1,0 +1,98 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y unzip wget ninja-build
+
+      # ─── DOWNLOAD OpenCV Android SDK ───────────────────────────────────
+      - name: Download OpenCV Android SDK
+        run: |
+          cd app/src/main/cpp
+          wget -q https://github.com/opencv/opencv/releases/download/4.6.0/opencv-4.6.0-android-sdk.zip
+          unzip -q opencv-4.6.0-android-sdk.zip
+          mv OpenCV-android-sdk opencv-4.6.0-android-sdk
+          echo "OpenCV ready ✓"
+
+      # ─── DOWNLOAD NCNN (Vulkan) ────────────────────────────────────────
+      - name: Download NCNN
+        run: |
+          cd app/src/main/cpp
+          wget -q https://github.com/Tencent/ncnn/releases/download/20230816/ncnn-20230816-android-vulkan.zip
+          unzip -q ncnn-20230816-android-vulkan.zip
+          mv ncnn-20230816-android-vulkan ncnn-custom-android-vulkan
+          echo "NCNN ready ✓"
+
+      # ─── CREATE PLACEHOLDER ASSETS (model files from releases) ────────
+      - name: Create assets placeholder
+        run: |
+          mkdir -p app/src/main/assets/models
+          echo "# Place model files here from Releases" > app/src/main/assets/models/.gitkeep
+
+      - name: Grant Gradle permission
+        run: chmod +x gradlew
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+
+      # ─── BUILD DEBUG APK ───────────────────────────────────────────────
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # ─── BUILD RELEASE APK ────────────────────────────────────────────
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: app/build/outputs/apk/release/app-release.apk
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "Build #${{ github.run_number }}"
+          files: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

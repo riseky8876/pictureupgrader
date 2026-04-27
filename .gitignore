@@ -1,0 +1,35 @@
+# Android
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Kotlin
+*.class
+*.jar
+*.war
+*.ear
+
+# Native libs (downloaded at build time by CI)
+app/src/main/cpp/opencv-4.6.0-android-sdk/
+app/src/main/cpp/ncnn-custom-android-vulkan/
+app/src/main/cpp/*.zip
+
+# Model assets (large files — distribute via Releases)
+app/src/main/assets/models/*.bin
+app/src/main/assets/models/*.param
+
+# Gradle cache
+.gradle/
+build/
