@@ -14,12 +14,16 @@ set(ncnn_DIR ${CMAKE_SOURCE_DIR}/ncnn-custom-android-vulkan/${ANDROID_ABI}/lib/c
 find_package(ncnn REQUIRED)
 
 # Set key properties
+# NOTE: -fvisibility=hidden is intentionally removed — it breaks typeinfo linkage
+# for classes that extend ncnn::Layer (e.g. Sig17Slice in colornet.cpp).
+# The ncnn static library exports typeinfo with default visibility; our subclasses
+# must match that visibility or the linker cannot resolve "typeinfo for ncnn::Layer".
 set_target_properties(
     ncnn PROPERTIES
     INTERFACE_COMPILE_OPTIONS "-frtti;-fexceptions"
 )
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -frtti -fexceptions -fopenmp -Os -ffunction-sections -fdata-sections -fvisibility=hidden -w -Wl,--gc-sections")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -frtti -fopenmp -Os -ffunction-sections -fdata-sections -fvisibility=hidden -w -Wl,--gc-sections")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -frtti -fexceptions -fopenmp -Os -ffunction-sections -fdata-sections -w -Wl,--gc-sections")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -frtti -fopenmp -Os -ffunction-sections -fdata-sections -w -Wl,--gc-sections")
 if (DEFINED ANDROID_NDK_MAJOR AND ${ANDROID_NDK_MAJOR} GREATER 20)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static-openmp")
 endif ()
@@ -28,20 +32,12 @@ endif ()
 file(GLOB srcs *.cpp *.c)
 file(GLOB hdrs *.hpp *.h)
 
-add_library( # Sets the name of the library.
+add_library(
         ${target}
-        # Sets the library as a shared library.
         SHARED
-        # Provides a relative path to your source file(s).
         ${srcs} ${hdrs})
-
-#find_library(log-lib log)
-
-# Specifies libraries CMake should link to your target library. You
-# can link multiple libraries, such as libraries you define in this
-# build script, prebuilt third-party libraries, or system libraries.
 
 include_directories("${CMAKE_CURRENT_LIST_DIR}")
 
-target_link_libraries( # Specifies the target library. ${log-lib}
+target_link_libraries(
         ${target} ncnn ${OpenCV_LIBS} ${ANDROID_OPENCV_COMPONENTS})
