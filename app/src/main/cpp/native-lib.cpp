@@ -7,25 +7,36 @@
 #include <include/pipeline.h>
 #include <include/colornet.h>
 
-#define TAG "PictureUpgrader"
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+#define TAG "PU"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-#define LIMIT_PIX 1000  // reduced from 1500 to lower memory pressure
-
-// ── crash log file path (written by signal handler, read by Kotlin) ──────────
 static char g_crash_log_path[512] = {0};
+static char g_step_log_path[512]  = {0};
+
+// Write current step to file — readable even after crash
+static void write_step(const char* step) {
+    LOGI("STEP: %s", step);
+    if (g_step_log_path[0]) {
+        FILE* f = fopen(g_step_log_path, "w");
+        if (f) { fprintf(f, "%s\n", step); fclose(f); }
+    }
+}
 
 static void crash_handler(int sig) {
     if (g_crash_log_path[0]) {
+        // read last step
+        char last_step[256] = "unknown";
+        if (g_step_log_path[0]) {
+            FILE* f = fopen(g_step_log_path, "r");
+            if (f) { fgets(last_step, sizeof(last_step), f); fclose(f); }
+        }
         FILE* f = fopen(g_crash_log_path, "w");
         if (f) {
-            fprintf(f, "CRASH: signal %d (%s)\n", sig, strsignal(sig));
-            fprintf(f, "This usually means: out-of-memory, null pointer, or stack overflow\n");
+            fprintf(f, "CRASH: signal %d (%s)\nLast step: %s\n", sig, strsignal(sig), last_step);
             fclose(f);
         }
     }
-    // re-raise so Android gets the real crash dump too
     signal(sig, SIG_DFL);
     raise(sig);
 }
@@ -35,92 +46,69 @@ extern "C" {
 JNIEXPORT void JNICALL
 Java_com_ernesto_pictureupgrader_MainActivity_initCrashHandler(
         JNIEnv* env, jobject, jstring crash_log_path) {
-    const char* path = env->GetStringUTFChars(crash_log_path, nullptr);
-    strncpy(g_crash_log_path, path, sizeof(g_crash_log_path) - 1);
-    env->ReleaseStringUTFChars(crash_log_path, path);
+    const char* p = env->GetStringUTFChars(crash_log_path, nullptr);
+    strncpy(g_crash_log_path, p, sizeof(g_crash_log_path)-1);
+    // step log next to crash log
+    snprintf(g_step_log_path, sizeof(g_step_log_path), "%s.step", p);
+    env->ReleaseStringUTFChars(crash_log_path, p);
     signal(SIGSEGV, crash_handler);
     signal(SIGABRT, crash_handler);
     signal(SIGBUS,  crash_handler);
     signal(SIGILL,  crash_handler);
-    LOGI("Crash handler installed, log: %s", g_crash_log_path);
 }
 
-// ── Super Resolution ─────────────────────────────────────────────────────────
+// ── Super Resolution ──────────────────────────────────────────────────────────
 JNIEXPORT jboolean JNICALL
 Java_com_ernesto_pictureupgrader_MainActivity_imgSupResolution(
         JNIEnv* env, jobject,
         jstring in_path, jstring out_path, jstring model_dir) {
 
-    const char* imagepath = env->GetStringUTFChars(in_path,    nullptr);
-    const char* outpath   = env->GetStringUTFChars(out_path,   nullptr);
-    const char* mdir      = env->GetStringUTFChars(model_dir,  nullptr);
-
-    LOGI("SR start | in=%s out=%s model=%s", imagepath, outpath, mdir);
+    const char* imagepath = env->GetStringUTFChars(in_path,   nullptr);
+    const char* outpath   = env->GetStringUTFChars(out_path,  nullptr);
+    const char* mdir      = env->GetStringUTFChars(model_dir, nullptr);
     jboolean result = JNI_FALSE;
 
-    try {
-        // 1. read image
-        cv::Mat img = cv::imread(imagepath, cv::IMREAD_COLOR);
-        if (img.empty()) {
-            LOGE("SR: imread failed: %s", imagepath);
-            goto cleanup_sr;
+    write_step("SR: imread");
+    cv::Mat img = cv::imread(imagepath, cv::IMREAD_COLOR);
+    if (img.empty()) { LOGE("imread failed: %s", imagepath); goto done_sr; }
+    LOGI("SR: image %dx%d", img.cols, img.rows);
+
+    {
+        write_step("SR: resize");
+        cv::Mat resized;
+        int w = img.cols, h = img.rows;
+        const int LIMIT = 800; // conservative limit
+        if (w >= h && w > LIMIT) {
+            cv::resize(img, resized, cv::Size(LIMIT, (int)((double)LIMIT/w*h)));
+        } else if (h > w && h > LIMIT) {
+            cv::resize(img, resized, cv::Size((int)((double)LIMIT/h*w), LIMIT));
+        } else {
+            resized = img.clone();
         }
-        LOGI("SR: image loaded %dx%d", img.cols, img.rows);
+        LOGI("SR: resized to %dx%d", resized.cols, resized.rows);
 
-        // 2. resize if too large (in → resized, never apply in-place)
-        {
-            cv::Mat resized;
-            int w = img.cols, h = img.rows;
-            if (w >= h && w > LIMIT_PIX) {
-                int nw = LIMIT_PIX, nh = (int)((double)LIMIT_PIX / w * h);
-                cv::resize(img, resized, cv::Size(nw, nh), 0, 0, cv::INTER_LINEAR);
-                LOGI("SR: resized to %dx%d", nw, nh);
-            } else if (h > w && h > LIMIT_PIX) {
-                int nh = LIMIT_PIX, nw = (int)((double)LIMIT_PIX / h * w);
-                cv::resize(img, resized, cv::Size(nw, nh), 0, 0, cv::INTER_LINEAR);
-                LOGI("SR: resized to %dx%d", nw, nh);
-            } else {
-                resized = img.clone();
-            }
-
-            // 3. create pipeline
-            wsdsb::PipelineConfig_t cfg;
-            cfg.model_path  = std::string(mdir);
-            cfg.bg_upsample = true;
-
-            wsdsb::PipeLine pipe;
-            LOGI("SR: loading models...");
-            if (pipe.CreatePipeLine(cfg) < 0) {
-                LOGE("SR: CreatePipeLine failed (model load error)");
-                goto cleanup_sr;
-            }
-            LOGI("SR: models loaded, running inference...");
-
-            // 4. apply — ALWAYS separate src/dst
-            cv::Mat out_image;
-            pipe.Apply(resized, out_image);
-
-            if (out_image.empty()) {
-                LOGE("SR: out_image is empty after Apply");
-                goto cleanup_sr;
-            }
-
-            // 5. write output
-            if (!cv::imwrite(outpath, out_image)) {
-                LOGE("SR: imwrite failed: %s", outpath);
-                goto cleanup_sr;
-            }
-            LOGI("SR: done, wrote %s", outpath);
-            result = JNI_TRUE;
+        write_step("SR: CreatePipeLine");
+        wsdsb::PipelineConfig_t cfg;
+        cfg.model_path  = std::string(mdir);
+        cfg.bg_upsample = true;
+        wsdsb::PipeLine pipe;
+        if (pipe.CreatePipeLine(cfg) < 0) {
+            LOGE("SR: CreatePipeLine failed");
+            goto done_sr;
         }
 
-    } catch (const std::exception& e) {
-        LOGE("SR: exception: %s", e.what());
-    } catch (...) {
-        LOGE("SR: unknown exception");
+        write_step("SR: Apply");
+        cv::Mat out_image;
+        pipe.Apply(resized, out_image);
+
+        write_step("SR: imwrite");
+        if (out_image.empty()) { LOGE("SR: out_image empty"); goto done_sr; }
+        if (!cv::imwrite(outpath, out_image)) { LOGE("SR: imwrite failed"); goto done_sr; }
+        result = JNI_TRUE;
+        write_step("SR: done");
     }
 
-cleanup_sr:
+done_sr:
     env->ReleaseStringUTFChars(in_path,   imagepath);
     env->ReleaseStringUTFChars(out_path,  outpath);
     env->ReleaseStringUTFChars(model_dir, mdir);
@@ -133,47 +121,30 @@ Java_com_ernesto_pictureupgrader_MainActivity_imgColouration(
         JNIEnv* env, jobject,
         jstring in_path, jstring out_path, jstring model_dir) {
 
-    const char* imagepath = env->GetStringUTFChars(in_path,    nullptr);
-    const char* outpath   = env->GetStringUTFChars(out_path,   nullptr);
-    const char* mdir      = env->GetStringUTFChars(model_dir,  nullptr);
-
-    LOGI("Colour start | in=%s", imagepath);
+    const char* imagepath = env->GetStringUTFChars(in_path,   nullptr);
+    const char* outpath   = env->GetStringUTFChars(out_path,  nullptr);
+    const char* mdir      = env->GetStringUTFChars(model_dir, nullptr);
     jboolean result = JNI_FALSE;
 
-    try {
-        cv::Mat img = cv::imread(imagepath, cv::IMREAD_COLOR);
-        if (img.empty()) {
-            LOGE("Colour: imread failed: %s", imagepath);
-            goto cleanup_col;
-        }
-        LOGI("Colour: image loaded %dx%d", img.cols, img.rows);
+    write_step("COL: imread");
+    cv::Mat img = cv::imread(imagepath, cv::IMREAD_COLOR);
+    if (img.empty()) { LOGE("COL: imread failed: %s", imagepath); goto done_col; }
+    LOGI("COL: image %dx%d", img.cols, img.rows);
 
-        {
-            cv::Mat out_image;
-            int ret = colorization(img, out_image, std::string(mdir));
-            if (ret < 0) {
-                LOGE("Colour: colorization() returned %d", ret);
-                goto cleanup_col;
-            }
-            if (out_image.empty()) {
-                LOGE("Colour: out_image empty after colorization");
-                goto cleanup_col;
-            }
-            if (!cv::imwrite(outpath, out_image)) {
-                LOGE("Colour: imwrite failed: %s", outpath);
-                goto cleanup_col;
-            }
-            LOGI("Colour: done, wrote %s", outpath);
-            result = JNI_TRUE;
-        }
+    {
+        write_step("COL: colorization()");
+        cv::Mat out_image;
+        int ret = colorization(img, out_image, std::string(mdir));
+        if (ret < 0) { LOGE("COL: colorization returned %d", ret); goto done_col; }
 
-    } catch (const std::exception& e) {
-        LOGE("Colour: exception: %s", e.what());
-    } catch (...) {
-        LOGE("Colour: unknown exception");
+        write_step("COL: imwrite");
+        if (out_image.empty()) { LOGE("COL: out_image empty"); goto done_col; }
+        if (!cv::imwrite(outpath, out_image)) { LOGE("COL: imwrite failed"); goto done_col; }
+        result = JNI_TRUE;
+        write_step("COL: done");
     }
 
-cleanup_col:
+done_col:
     env->ReleaseStringUTFChars(in_path,   imagepath);
     env->ReleaseStringUTFChars(out_path,  outpath);
     env->ReleaseStringUTFChars(model_dir, mdir);
