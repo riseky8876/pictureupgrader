@@ -1,94 +1,23 @@
-// colornet.cpp — compiled with -frtti (same as all other files).
-// Sig17Slice::typeinfo visibility issue solved via __attribute__((visibility("default")))
-// so the linker can match it against ncnn::Layer's typeinfo in libncnn.a.
-#include <cstdio>
-#include <vector>
-#include <net.h>
-#include <layer.h>
-#include <omp.h>
+// colornet.cpp — compiled with -frtti (global default).
+// Does NOT subclass ncnn::Layer. Calls colorization_impl() via extern "C"
+// which lives in colornet_impl.cpp (compiled with -fno-rtti).
+// This split eliminates the "typeinfo for ncnn::Layer" linker error entirely.
 #include <include/colornet.h>
+#include <opencv2/opencv.hpp>
 
-// Export typeinfo with default visibility so linker can resolve
-// "typeinfo for ncnn::Layer" from libncnn.a (which uses -fvisibility=hidden internally
-// but exports its own typeinfo as default for subclassing to work).
-class __attribute__((visibility("default"))) Sig17Slice : public ncnn::Layer
-{
-public:
-    Sig17Slice() {
-        one_blob_only = true;
-    }
-
-    virtual ~Sig17Slice() {}
-
-    int forward(const ncnn::Mat& bottom_blob, ncnn::Mat& top_blob, const ncnn::Option& opt) const override {
-        int w = bottom_blob.w;
-        int h = bottom_blob.h;
-        int channels = bottom_blob.c;
-
-        int outw = w / 2;
-        int outh = h / 2;
-        int outc = channels;
-
-        top_blob.create(outw, outh, outc, 4u, 1, opt.blob_allocator);
-        if (top_blob.empty())
-            return -100;
-
-#pragma omp parallel for num_threads(opt.num_threads)
-        for (int p = 0; p < outc; p++)
-        {
-            const float* ptr = bottom_blob.channel(p % channels).row((p / channels) % 2) + ((p / channels) / 2);
-            float* outptr = top_blob.channel(p);
-            for (int i = 0; i < outh; i++)
-            {
-                for (int j = 0; j < outw; j++)
-                {
-                    *outptr = *ptr;
-                    outptr++;
-                    ptr += 2;
-                }
-                ptr += w;
-            }
-        }
-        return 0;
-    }
-};
-
-DEFINE_LAYER_CREATOR(Sig17Slice)
+// Implemented in colornet_impl.cpp (compiled with -fno-rtti)
+extern "C" int colorization_impl(const unsigned char* bgr_data, int w, int h,
+                                  unsigned char* out_data,       int out_w, int out_h,
+                                  const char* model_path);
 
 int colorization(const cv::Mat& bgr, cv::Mat& out_image, const std::string& model_path) {
-    ncnn::Net net;
-    net.opt.use_vulkan_compute = false;
-    net.register_custom_layer("Sig17Slice", Sig17Slice_layer_creator);
-
-    if (net.load_param((model_path + "/siggraph17_color_sim.param").c_str())) return -1;
-    if (net.load_model((model_path + "/siggraph17_color_sim.bin").c_str()))   return -1;
-
-    const int W_in = 256, H_in = 256;
-    cv::Mat Base_img, lab, L, input_img;
-
-    Base_img = bgr.clone();
-    Base_img.convertTo(Base_img, CV_32F, 1.0 / 255);
-    cvtColor(Base_img, lab, cv::COLOR_BGR2Lab);
-    cv::extractChannel(lab, L, 0);
-    resize(L, input_img, cv::Size(W_in, H_in));
-
-    ncnn::Mat in_LAB_L(input_img.cols, input_img.rows, 1, (void*)input_img.data);
-    in_LAB_L = in_LAB_L.clone();
-
-    ncnn::Extractor ex = net.create_extractor();
-    ex.input("input", in_LAB_L);
-    ncnn::Mat out;
-    ex.extract("out_ab", out);
-
-    cv::Mat a(out.h, out.w, CV_32F, (float*)out.data);
-    cv::Mat b(out.h, out.w, CV_32F, (float*)out.data + out.w * out.h);
-    cv::resize(a, a, Base_img.size());
-    cv::resize(b, b, Base_img.size());
-
-    cv::Mat color, chn[] = {L, a, b};
-    cv::merge(chn, 3, lab);
-    cvtColor(lab, color, cv::COLOR_Lab2BGR);
-    color.convertTo(color, CV_8UC3, 255);
-    color.copyTo(out_image);
-    return 0;
+    if (bgr.empty()) return -1;
+    // Allocate output buffer same size as input
+    out_image.create(bgr.rows, bgr.cols, CV_8UC3);
+    int ret = colorization_impl(
+        bgr.data,       bgr.cols,       bgr.rows,
+        out_image.data, out_image.cols, out_image.rows,
+        model_path.c_str()
+    );
+    return ret;
 }
