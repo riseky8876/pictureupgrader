@@ -60,12 +60,12 @@ class MainActivity : AppCompatActivity() {
     private fun copyAssetsModels(): File {
         val dest = File(getExternalFilesDir(null), "models")
         if (!dest.exists()) dest.mkdirs()
-        val assets = assets.list("models") ?: return dest
-        for (asset in assets) {
+        val assetList = assets.list("models") ?: return dest
+        for (asset in assetList) {
             if (asset.startsWith(".")) continue
             val out = File(dest, asset)
             try {
-                assets().open("models/$asset").use { i -> FileOutputStream(out).use { o -> i.copyTo(o) } }
+                assets.open("models/$asset").use { i -> FileOutputStream(out).use { o -> i.copyTo(o) } }
             } catch (e: Exception) {
                 android.util.Log.e("PU", "copy failed: $asset ${e.message}")
             }
