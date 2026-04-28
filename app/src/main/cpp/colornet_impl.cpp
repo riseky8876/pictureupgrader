@@ -1,17 +1,13 @@
-// colornet_impl.cpp — compiled with -fno-rtti via CMakeLists set_source_files_properties
-// Isolated from colornet.cpp so the extern "C" colorization() in colornet.cpp
-// can be compiled normally with -frtti (matching native-lib.cpp).
-// Sig17Slice lives here ONLY — no typeinfo referenced from -frtti translation units.
+// colornet_impl.cpp — compiled with -fno-rtti (see CMakeLists.txt)
+// Must NOT include any OpenCV header that uses typeid (e.g. flann/any.h).
+// Only includes ncnn headers (built with -fno-rtti, safe) and basic C headers.
+// cv::Mat pixel operations are done via raw pointers passed from colornet.cpp.
 #include <cstdio>
+#include <cstring>
+#include <string>
 #include <net.h>
 #include <layer.h>
 #include <omp.h>
-#include <opencv2/opencv.hpp>
-
-// Forward declaration of the C linkage function we implement below
-extern "C" int colorization_impl(const unsigned char* bgr_data, int w, int h,
-                                  unsigned char* out_data,       int out_w, int out_h,
-                                  const char* model_path);
 
 class Sig17Slice : public ncnn::Layer {
 public:
@@ -37,46 +33,43 @@ public:
 };
 DEFINE_LAYER_CREATOR(Sig17Slice)
 
-extern "C" int colorization_impl(const unsigned char* bgr_data, int w, int h,
-                                   unsigned char* out_data,       int out_w, int out_h,
-                                   const char* model_path) {
+// Called from colornet.cpp (compiled with -frtti + OpenCV).
+// Receives pre-processed L channel as float buffer (256x256),
+// returns ab channels as float buffer (h*w*2 floats, output size matches input L).
+extern "C" int colorization_ncnn(
+        const float* L_data,    // input: L channel 256x256 float
+        float* ab_data,         // output: ab channels h_out*w_out*2 floats
+        int w_out, int h_out,   // size of ab output (original image size)
+        const char* model_path)
+{
     ncnn::Net net;
     net.opt.use_vulkan_compute = false;
     net.register_custom_layer("Sig17Slice", Sig17Slice_layer_creator);
+
     std::string mp(model_path);
     if (net.load_param((mp + "/siggraph17_color_sim.param").c_str())) return -1;
     if (net.load_model((mp + "/siggraph17_color_sim.bin").c_str()))   return -1;
 
-    // wrap raw data into cv::Mat without copy
-    cv::Mat bgr(h, w, CV_8UC3, (void*)bgr_data);
-    cv::Mat base; bgr.convertTo(base, CV_32F, 1.0/255);
-
-    cv::Mat lab, L, input_img;
-    cvtColor(base, lab, cv::COLOR_BGR2Lab);
-    cv::extractChannel(lab, L, 0);
-    resize(L, input_img, cv::Size(256, 256));
-
-    ncnn::Mat in_L(256, 256, 1, (void*)input_img.data);
-    in_L = in_L.clone();
+    // wrap L buffer — ncnn Mat(w, h, channels, data)
+    ncnn::Mat in_L(256, 256, 1, (void*)L_data);
+    in_L = in_L.clone(); // ensure ncnn owns the data
 
     ncnn::Extractor ex = net.create_extractor();
     ex.input("input", in_L);
     ncnn::Mat out;
-    ex.extract("out_ab", out);
+    ex.extract("out_ab", out); // shape: [2, out.h, out.w]
 
-    cv::Mat a(out.h, out.w, CV_32F, (float*)out.data);
-    cv::Mat b(out.h, out.w, CV_32F, (float*)out.data + out.w * out.h);
-    cv::resize(a, a, base.size());
-    cv::resize(b, b, base.size());
+    // out contains a and b channels contiguously
+    // copy to caller's buffer (caller will resize to original image size)
+    int ncnn_pixels = out.w * out.h;
+    memcpy(ab_data,                out.data,                          ncnn_pixels * sizeof(float)); // a
+    memcpy(ab_data + ncnn_pixels, (float*)out.data + ncnn_pixels,    ncnn_pixels * sizeof(float)); // b
+    // pass ncnn output size back via first two floats is not needed —
+    // caller knows ncnn output is 256/2=128 wide (Sig17Slice halves it),
+    // but we store the actual out dimensions in ab_data[-2],[-1] is fragile.
+    // Instead store w/h as the last 2 floats after ab data.
+    ab_data[ncnn_pixels * 2]     = (float)out.w;
+    ab_data[ncnn_pixels * 2 + 1] = (float)out.h;
 
-    cv::Mat chn[] = {L, a, b};
-    cv::merge(chn, 3, lab);
-    cv::Mat color;
-    cvtColor(lab, color, cv::COLOR_Lab2BGR);
-    color.convertTo(color, CV_8UC3, 255);
-
-    // write result to caller's buffer
-    cv::Mat out_mat(out_h, out_w, CV_8UC3, out_data);
-    cv::resize(color, out_mat, cv::Size(out_w, out_h));
     return 0;
 }
