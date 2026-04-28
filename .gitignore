@@ -27,8 +27,6 @@ app/src/main/cpp/ncnn-custom-android-vulkan/
 app/src/main/cpp/*.zip
 
 # Model assets (large files — distribute via Releases)
-app/src/main/assets/models/*.bin
-app/src/main/assets/models/*.param
 
 # Gradle cache
 .gradle/
