@@ -134,7 +134,7 @@ int Face::Load(const std::string& model_path)
     std::string param = model_path + "/scrfd_500m-opt2.param";
     std::string bin   = model_path + "/scrfd_500m-opt2.bin";
 
-    net_.opt.use_vulkan_compute = true;
+    net_.opt.use_vulkan_compute = false;
 
     if (net_.load_param(param.c_str())) {
         fprintf(stderr, "open param file %s failed\n", param.c_str());
