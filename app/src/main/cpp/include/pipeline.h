@@ -5,13 +5,14 @@
 #include <include/realesrgan.h>
 #include <include/face.h>
 
-namespace wsdsb{
+namespace wsdsb {
+
 typedef struct _PipelineConfig {
     bool bg_upsample = false;
     bool face_upsample = false;
     float w = 0.7;
     std::string model_path;
-}PipelineConfig_t;
+} PipelineConfig_t;
 
 class PipeLine
 {
@@ -28,6 +29,6 @@ private:
     PipelineConfig_t pipeline_config_;
 };
 
-}  // namespace wsdsb
+} // namespace wsdsb
 
 #endif // PIPELINE_H
