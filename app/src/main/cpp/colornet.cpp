@@ -1,8 +1,5 @@
-// NOTE: This file is intentionally compiled with -fno-rtti (see CMakeLists.txt).
-// libncnn.a is built with -fvisibility=hidden, which hides typeinfo for ncnn::Layer.
-// Compiling with -frtti here would generate typeinfo for Sig17Slice that references
-// ncnn::Layer's hidden typeinfo -> linker error "undefined symbol: typeinfo for ncnn::Layer".
-// With -fno-rtti, no typeinfo is generated and linking succeeds.
+// Compiled with -fno-rtti (see CMakeLists.txt set_source_files_properties)
+// to avoid "undefined symbol: typeinfo for ncnn::Layer" from libncnn.a
 #include <cstdio>
 #include <vector>
 #include <net.h>
@@ -35,7 +32,6 @@ public:
         {
             const float* ptr = bottom_blob.channel(p % channels).row((p / channels) % 2) + ((p / channels) / 2);
             float* outptr = top_blob.channel(p);
-
             for (int i = 0; i < outh; i++)
             {
                 for (int j = 0; j < outw; j++)
@@ -47,39 +43,45 @@ public:
                 ptr += w;
             }
         }
-
         return 0;
     }
 };
 
 DEFINE_LAYER_CREATOR(Sig17Slice)
 
-int colorization(const cv::Mat &bgr, const cv::Mat &out_image, const std::string &model_path) {
+// FIX: out_image changed from const ref to non-const ref
+// Previously color.copyTo(out_image) silently did nothing because out_image was const
+int colorization(const cv::Mat& bgr, cv::Mat& out_image, const std::string& model_path) {
     ncnn::Net net;
     net.opt.use_vulkan_compute = true;
     net.register_custom_layer("Sig17Slice", Sig17Slice_layer_creator);
+
     const int W_in = 256;
     const int H_in = 256;
     cv::Mat Base_img, lab, L, input_img;
+
     if (net.load_param((model_path + "/siggraph17_color_sim.param").c_str())) return -1;
-    if (net.load_model((model_path + "/siggraph17_color_sim.bin").c_str())) return -1;
+    if (net.load_model((model_path + "/siggraph17_color_sim.bin").c_str()))   return -1;
+
     Base_img = bgr.clone();
     Base_img.convertTo(Base_img, CV_32F, 1.0 / 255);
     cvtColor(Base_img, lab, cv::COLOR_BGR2Lab);
     cv::extractChannel(lab, L, 0);
     resize(L, input_img, cv::Size(W_in, H_in));
-    ncnn::Mat in_LAB_L(input_img.cols, input_img.rows, 1, (void *)input_img.data);
+
+    ncnn::Mat in_LAB_L(input_img.cols, input_img.rows, 1, (void*)input_img.data);
     in_LAB_L = in_LAB_L.clone();
+
     ncnn::Extractor ex = net.create_extractor();
     ex.input("input", in_LAB_L);
     ncnn::Mat out;
     ex.extract("out_ab", out);
-    cv::Mat colored_LAB(out.h, out.w, CV_32FC2);
-    memcpy((uchar *)colored_LAB.data, out.data, out.w * out.h * 2 * sizeof(float));
-    cv::Mat a(out.h, out.w, CV_32F, (float *)out.data);
-    cv::Mat b(out.h, out.w, CV_32F, (float *)out.data + out.w * out.h);
+
+    cv::Mat a(out.h, out.w, CV_32F, (float*)out.data);
+    cv::Mat b(out.h, out.w, CV_32F, (float*)out.data + out.w * out.h);
     cv::resize(a, a, Base_img.size());
     cv::resize(b, b, Base_img.size());
+
     cv::Mat color, chn[] = {L, a, b};
     cv::merge(chn, 3, lab);
     cvtColor(lab, color, cv::COLOR_Lab2BGR);
