@@ -9,12 +9,10 @@ find_package(OpenCV REQUIRED)
 set(ncnn_DIR ${CMAKE_SOURCE_DIR}/ncnn-custom-android-vulkan/${ANDROID_ABI}/lib/cmake/ncnn)
 find_package(ncnn REQUIRED)
 
-# Override ncnn's INTERFACE_COMPILE_OPTIONS to avoid it injecting -frtti/-fno-rtti
-# We control rtti globally ourselves.
+# Suppress ncnn's injected compile options so we control rtti ourselves
 set_target_properties(ncnn PROPERTIES INTERFACE_COMPILE_OPTIONS "-fexceptions")
 
-# Use -frtti globally (required by OpenCV flann/any.h).
-# Sig17Slice typeinfo issue is fixed in colornet.cpp via visibility attribute instead.
+# Global: -frtti required by OpenCV (flann/any.h uses typeid)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -frtti -fexceptions -fopenmp -Os -ffunction-sections -fdata-sections -fvisibility=hidden -w -Wl,--gc-sections")
 set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fopenmp -Os -ffunction-sections -fdata-sections -fvisibility=hidden -w -Wl,--gc-sections")
 
@@ -26,6 +24,13 @@ file(GLOB srcs *.cpp *.c)
 file(GLOB hdrs *.hpp *.h)
 
 add_library(${target} SHARED ${srcs} ${hdrs})
+
+# colornet_impl.cpp contains Sig17Slice (subclass of ncnn::Layer).
+# libncnn.a is built with -fno-rtti so typeinfo for ncnn::Layer does not exist.
+# Compiling colornet_impl.cpp with -fno-rtti prevents typeinfo generation entirely,
+# avoiding "undefined symbol: typeinfo for ncnn::Layer".
+# colornet.cpp (the public API wrapper) stays -frtti so name mangling matches callers.
+set_source_files_properties(colornet_impl.cpp PROPERTIES COMPILE_FLAGS "-fno-rtti")
 
 include_directories("${CMAKE_CURRENT_LIST_DIR}")
 
