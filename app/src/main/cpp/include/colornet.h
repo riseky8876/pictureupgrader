@@ -10,6 +10,7 @@
 #include <opencv2/calib3d/calib3d.hpp>
 #endif
 
-int colorization(const cv::Mat& bgr, const cv::Mat& out_image, const std::string &model_path);
+// out_image must be non-const ref so copyTo() can write into it
+int colorization(const cv::Mat& bgr, cv::Mat& out_image, const std::string& model_path);
 
 #endif // COLORNET_H_INCLUDED
