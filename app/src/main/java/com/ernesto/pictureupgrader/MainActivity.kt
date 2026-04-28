@@ -245,7 +245,9 @@ class MainActivity : AppCompatActivity() {
             diag.append("\nResult:  ${if (success) "✓ SUCCESS" else "✗ FAILED"}\n")
             diag.append("Output exists: ${outFile.exists()}, ${outFile.length()}B\n")
             if (exception.isNotEmpty()) diag.append("Exception: $exception\n")
-            if (crashFile.exists()) diag.append("\nCRASH LOG:\n${crashFile.readText()}\n")
+            val stepFile = File(getExternalFilesDir(null), "crash.log.step")
+                if (stepFile.exists()) diag.append("\nLast step before crash: ${stepFile.readText()}\n")
+                if (crashFile.exists()) diag.append("\nCRASH LOG:\n${crashFile.readText()}\n")
 
             runOnUiThread {
                 dlg?.dismiss()
