@@ -1,6 +1,5 @@
 package com.ernesto.pictureupgrader
 
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -30,7 +29,7 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val GALLERY_REQ = 0x3a
+        private const val GALLERY_REQ  = 0x3a
         private const val REQUEST_CODE = 0x3f
         init { System.loadLibrary("pictureupgrader") }
     }
@@ -43,34 +42,61 @@ class MainActivity : AppCompatActivity() {
     private external fun imgSupResolution(inPath: String, outPath: String, modelDir: String): Boolean
     private external fun imgColouration(inPath: String, outPath: String, modelDir: String): Boolean
 
+    private fun modelDir(): File = File(getExternalFilesDir(null), "models")
+
+    // Check that all critical .bin files exist and are non-empty
+    private fun modelsReady(): Boolean {
+        val dir = modelDir()
+        val required = listOf(
+            "siggraph17_color_sim.bin",
+            "encoder.bin",
+            "generator.bin",
+            "real_esrgan.bin",
+            "scrfd_500m-opt2.bin"
+        )
+        val missing = required.filter { name ->
+            val f = File(dir, name)
+            !f.exists() || f.length() < 1024 * 100 // must be at least 100KB
+        }
+        if (missing.isNotEmpty()) {
+            android.util.Log.e("PU", "Missing/small models: $missing")
+        }
+        return missing.isEmpty()
+    }
+
     private fun showDebugDialog(title: String, msg: String) {
         runOnUiThread {
             val tv = TextView(this).apply {
-                text = msg; setPadding(32, 16, 32, 16)
+                text = msg; setPadding(32,16,32,16)
                 setTextIsSelectable(true); textSize = 11f
             }
             AlertDialog.Builder(this)
                 .setTitle(title)
                 .setView(ScrollView(this).apply { addView(tv) })
-                .setPositiveButton("OK", null)
-                .show()
+                .setPositiveButton("OK", null).show()
         }
     }
 
-    private fun copyAssetsModels(): File {
-        val dest = File(getExternalFilesDir(null), "models")
-        if (!dest.exists()) dest.mkdirs()
-        val assetList = assets.list("models") ?: return dest
-        for (asset in assetList) {
-            if (asset.startsWith(".")) continue
-            val out = File(dest, asset)
+    // Copy assets/models/* → external storage, always overwrite
+    private fun copyModelsFromAssets(): String {
+        val dest = modelDir()
+        dest.mkdirs()
+        val log = StringBuilder()
+        val assetList = assets.list("models") ?: return "assets.list returned null"
+        log.append("Assets found: ${assetList.size}\n")
+        for (name in assetList) {
+            if (name == "README.txt" || name.startsWith(".")) continue
+            val outFile = File(dest, name)
             try {
-                assets.open("models/$asset").use { i -> FileOutputStream(out).use { o -> i.copyTo(o) } }
+                assets.open("models/$name").use { input ->
+                    FileOutputStream(outFile).use { output -> input.copyTo(output) }
+                }
+                log.append("✓ $name (${outFile.length()} bytes)\n")
             } catch (e: Exception) {
-                android.util.Log.e("PU", "copy failed: $asset ${e.message}")
+                log.append("✗ $name FAILED: ${e.message}\n")
             }
         }
-        return dest
+        return log.toString()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -78,11 +104,21 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // install native crash handler
+        // Crash handler
         val crashLog = File(getExternalFilesDir(null), "crash.log").absolutePath
         try { initCrashHandler(crashLog) } catch (e: Exception) {}
 
-        // permissions
+        // Show previous crash
+        val prevCrash = File(getExternalFilesDir(null), "crash.log")
+        val prevStep  = File(getExternalFilesDir(null), "crash.log.step")
+        if (prevCrash.exists()) {
+            val stepTxt  = if (prevStep.exists()) prevStep.readText().trim() else "unknown"
+            showDebugDialog("💥 Previous Crash",
+                "Last step: $stepTxt\n\nDetail:\n${prevCrash.readText()}")
+            prevCrash.delete(); prevStep.delete()
+        }
+
+        // Permissions
         if (Build.VERSION.SDK_INT > Build.VERSION_CODES.S) {
             if (!Environment.isExternalStorageManager())
                 startActivityForResult(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION), REQUEST_CODE)
@@ -98,21 +134,25 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnSuperResolution.setOnClickListener {
-            selectedImagePath?.let { path ->
-                val bmp = BitmapFactory.decodeFile(path)
-                if ((bmp?.height ?: 0) > 1500 || (bmp?.width ?: 0) > 1500) {
-                    AlertDialog.Builder(this)
-                        .setTitle(R.string.warn_title).setMessage(R.string.large_warn)
-                        .setCancelable(false)
-                        .setPositiveButton("Yes") { _, _ -> processImage(::imgSupResolution, "Super Resolution") }
-                        .setNegativeButton("No", null).create().show()
-                } else processImage(::imgSupResolution, "Super Resolution")
+            selectedImagePath?.let {
+                if (!modelsReady()) { copyModelsWithDialog { processImage(::imgSupResolution, "Super Resolution") } }
+                else {
+                    val bmp = BitmapFactory.decodeFile(it)
+                    if ((bmp?.height ?: 0) > 1500 || (bmp?.width ?: 0) > 1500) {
+                        AlertDialog.Builder(this)
+                            .setTitle(R.string.warn_title).setMessage(R.string.large_warn)
+                            .setPositiveButton("Yes") { _, _ -> processImage(::imgSupResolution, "Super Resolution") }
+                            .setNegativeButton("No", null).create().show()
+                    } else processImage(::imgSupResolution, "Super Resolution")
+                }
             } ?: toast("Please select an image first.")
         }
 
         binding.btnColorization.setOnClickListener {
-            selectedImagePath?.let { processImage(::imgColouration, "Colouration") }
-                ?: toast("Please select an image first.")
+            selectedImagePath?.let {
+                if (!modelsReady()) copyModelsWithDialog { processImage(::imgColouration, "Colouration") }
+                else processImage(::imgColouration, "Colouration")
+            } ?: toast("Please select an image first.")
         }
 
         binding.btnDownsmp.setOnClickListener {
@@ -140,37 +180,41 @@ class MainActivity : AppCompatActivity() {
                                     binding.imageView.setImageBitmap(BitmapFactory.decodeFile(imagePath))
                                     toast("Down sampling completed!")
                                 }
-                            } catch (e: IOException) {
-                                runOnUiThread { toast("Down sampling failed!") }
-                            }
+                            } catch (e: IOException) { runOnUiThread { toast("Down sampling failed!") } }
                         }
                     }
                     .setNegativeButton("Cancel", null).create().show()
             } ?: toast("Please select an image first.")
         }
 
-        // copy models on first install
-        val modelsDir = File(getExternalFilesDir(null), "models")
-        if (!modelsDir.exists() || (modelsDir.listFiles()?.none { it.name.endsWith(".bin") } == true)) {
-            val d = AlertDialog.Builder(this)
-                .setTitle(R.string.in_progress).setMessage(R.string.extracting).setCancelable(false).create()
-            d.show()
-            thread {
-                val dest = copyAssetsModels()
-                val required = listOf(
-                    "siggraph17_color_sim.param","siggraph17_color_sim.bin",
-                    "encoder.param","encoder.bin","generator.param","generator.bin",
-                    "real_esrgan.param","real_esrgan.bin",
-                    "scrfd_500m-opt2.param","scrfd_500m-opt2.bin"
-                )
-                val missing = required.filter { !File(dest, it).exists() }
-                runOnUiThread {
-                    d.dismiss()
-                    if (missing.isNotEmpty()) {
-                        showDebugDialog("⚠️ Missing Models",
-                            "Missing files:\n${missing.joinToString("\n") { "✗ $it" }}\n\n" +
-                            "Found:\n${dest.listFiles()?.joinToString("\n") { "${it.name} (${it.length()}B)" } ?: "none"}")
-                    }
+        // Always re-copy models on fresh install or if any bin is missing/small
+        if (!modelsReady()) {
+            copyModelsWithDialog(onDone = null)
+        }
+    }
+
+    private fun copyModelsWithDialog(onDone: (() -> Unit)?) {
+        val d = AlertDialog.Builder(this)
+            .setTitle(R.string.in_progress)
+            .setMessage(R.string.extracting)
+            .setCancelable(false).create()
+        d.show()
+        thread {
+            val log = copyModelsFromAssets()
+            android.util.Log.i("PU", "Copy log:\n$log")
+            val ready = modelsReady()
+            runOnUiThread {
+                d.dismiss()
+                if (!ready) {
+                    // Show what was copied so user can report
+                    val dir = modelDir()
+                    val fileList = dir.listFiles()
+                        ?.joinToString("\n") { "${it.name} — ${it.length()} bytes" }
+                        ?: "empty"
+                    showDebugDialog("⚠️ Model Copy Result",
+                        "Copy log:\n$log\n\nFiles in ${dir.absolutePath}:\n$fileList")
+                } else {
+                    onDone?.invoke()
                 }
             }
         }
@@ -196,59 +240,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun processImagePath(imagePath: String): String {
-        val f = File(imagePath)
-        return "${f.parent ?: ""}/${f.nameWithoutExtension}_processed.jpg"
-    }
+    private fun processImagePath(p: String) =
+        File(p).let { "${it.parent ?: ""}/${it.nameWithoutExtension}_processed.jpg" }
 
     private fun processImage(fn: (String, String, String) -> Boolean, name: String) {
-        val imagePath = selectedImagePath ?: run { toast("Please select an image first."); return }
-
-        val pb = ProgressBar(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        }
+        val imagePath = selectedImagePath ?: run { toast("Select an image first."); return }
         dlg = AlertDialog.Builder(this)
             .setTitle(R.string.in_progress)
-            .setView(pb)
+            .setView(ProgressBar(this))
             .setMessage(getString(R.string.content_in_progress).format(name))
             .setCancelable(false).create()
         dlg?.show()
 
         thread {
             val outPath   = processImagePath(imagePath)
-            val modelDir  = File(getExternalFilesDir(null), "models").absolutePath
+            val mdir      = modelDir().absolutePath
             val crashFile = File(getExternalFilesDir(null), "crash.log")
-            crashFile.delete() // clear previous crash
+            val stepFile  = File(getExternalFilesDir(null), "crash.log.step")
+            crashFile.delete(); stepFile.delete()
 
-            // build a pre-run diagnostic string
-            val diag = StringBuilder()
-            diag.append("Feature: $name\n")
-            diag.append("Input:   $imagePath (exists=${File(imagePath).exists()}, ${File(imagePath).length()}B)\n")
-            diag.append("Output:  $outPath\n")
-            diag.append("Models:  $modelDir\n")
-            File(modelDir).listFiles()?.forEach { diag.append("  ${it.name} ${it.length()}B\n") }
-                ?: diag.append("  (models folder empty!)\n")
-
-            android.util.Log.i("PU", diag.toString())
+            // Log model dir contents before running
+            val dirContents = modelDir().listFiles()
+                ?.joinToString("\n") { "${it.name} ${it.length()}B" } ?: "empty"
+            android.util.Log.i("PU", "Model dir:\n$dirContents")
 
             var success = false
-            var exception = ""
-            try {
-                success = fn(imagePath, outPath, modelDir)
-            } catch (e: Throwable) {
-                exception = e.toString()
-                android.util.Log.e("PU", "Throwable: $exception")
-            }
+            var ex = ""
+            try { success = fn(imagePath, outPath, mdir) }
+            catch (e: Throwable) { ex = e.toString() }
 
             val outFile = File(outPath)
-            diag.append("\nResult:  ${if (success) "✓ SUCCESS" else "✗ FAILED"}\n")
-            diag.append("Output exists: ${outFile.exists()}, ${outFile.length()}B\n")
-            if (exception.isNotEmpty()) diag.append("Exception: $exception\n")
-            val stepFile = File(getExternalFilesDir(null), "crash.log.step")
-                if (stepFile.exists()) diag.append("\nLast step before crash: ${stepFile.readText()}\n")
-                if (crashFile.exists()) diag.append("\nCRASH LOG:\n${crashFile.readText()}\n")
-
             runOnUiThread {
                 dlg?.dismiss()
                 if (success && outFile.exists() && outFile.length() > 0) {
@@ -256,7 +277,10 @@ class MainActivity : AppCompatActivity() {
                     toast("$name completed.")
                     selectedImagePath = outPath
                 } else {
-                    showDebugDialog("❌ $name Failed — kirim screenshot ini", diag.toString())
+                    val stepTxt = if (stepFile.exists()) stepFile.readText() else "none"
+                    val crashTxt = if (crashFile.exists()) crashFile.readText() else "no crash file"
+                    showDebugDialog("❌ $name Failed",
+                        "Model dir: $mdir\nFiles:\n$dirContents\n\nLast step: $stepTxt\n\nCrash: $crashTxt\n\nException: $ex")
                 }
             }
         }
