@@ -63,7 +63,7 @@ jobs:
           # Find the correct tag for AI Models release
           # Try common tag names
           TAG=""
-          for candidate in models "AI Models" ai-models model v1.0.0; do
+          for candidate in models-on-publish models "AI Models" ai-models model v1.0.0; do
             if gh release view "$candidate" --repo "$REPO" > /dev/null 2>&1; then
               TAG="$candidate"
               echo "Found release with tag: $TAG"
