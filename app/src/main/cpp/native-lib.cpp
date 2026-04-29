@@ -1,7 +1,6 @@
 #include <jni.h>
 #include <string>
 #include <signal.h>
-#include <unistd.h>
 #include <android/log.h>
 #include <opencv2/opencv.hpp>
 #include <include/pipeline.h>
@@ -14,7 +13,6 @@
 static char g_crash_log_path[512] = {0};
 static char g_step_log_path[512]  = {0};
 
-// Write current step to file — readable even after crash
 static void write_step(const char* step) {
     LOGI("STEP: %s", step);
     if (g_step_log_path[0]) {
@@ -24,13 +22,12 @@ static void write_step(const char* step) {
 }
 
 static void crash_handler(int sig) {
+    char last_step[256] = "unknown";
+    if (g_step_log_path[0]) {
+        FILE* f = fopen(g_step_log_path, "r");
+        if (f) { fgets(last_step, sizeof(last_step), f); fclose(f); }
+    }
     if (g_crash_log_path[0]) {
-        // read last step
-        char last_step[256] = "unknown";
-        if (g_step_log_path[0]) {
-            FILE* f = fopen(g_step_log_path, "r");
-            if (f) { fgets(last_step, sizeof(last_step), f); fclose(f); }
-        }
         FILE* f = fopen(g_crash_log_path, "w");
         if (f) {
             fprintf(f, "CRASH: signal %d (%s)\nLast step: %s\n", sig, strsignal(sig), last_step);
@@ -48,7 +45,6 @@ Java_com_ernesto_pictureupgrader_MainActivity_initCrashHandler(
         JNIEnv* env, jobject, jstring crash_log_path) {
     const char* p = env->GetStringUTFChars(crash_log_path, nullptr);
     strncpy(g_crash_log_path, p, sizeof(g_crash_log_path)-1);
-    // step log next to crash log
     snprintf(g_step_log_path, sizeof(g_step_log_path), "%s.step", p);
     env->ReleaseStringUTFChars(crash_log_path, p);
     signal(SIGSEGV, crash_handler);
@@ -70,14 +66,16 @@ Java_com_ernesto_pictureupgrader_MainActivity_imgSupResolution(
 
     write_step("SR: imread");
     cv::Mat img = cv::imread(imagepath, cv::IMREAD_COLOR);
-    if (img.empty()) { LOGE("imread failed: %s", imagepath); goto done_sr; }
-    LOGI("SR: image %dx%d", img.cols, img.rows);
+    if (img.empty()) { LOGE("imread failed"); goto done_sr; }
 
     {
+        // Aggressively limit input size to avoid OOM
+        // Each pixel = 3 bytes, ncnn needs ~10x for intermediate buffers
+        // 600x600 * 3 * 10 = ~10MB — safe for most devices
         write_step("SR: resize");
         cv::Mat resized;
+        const int LIMIT = 600;
         int w = img.cols, h = img.rows;
-        const int LIMIT = 800; // conservative limit
         if (w >= h && w > LIMIT) {
             cv::resize(img, resized, cv::Size(LIMIT, (int)((double)LIMIT/w*h)));
         } else if (h > w && h > LIMIT) {
@@ -85,6 +83,7 @@ Java_com_ernesto_pictureupgrader_MainActivity_imgSupResolution(
         } else {
             resized = img.clone();
         }
+        img.release(); // free original immediately
         LOGI("SR: resized to %dx%d", resized.cols, resized.rows);
 
         write_step("SR: CreatePipeLine");
@@ -92,18 +91,16 @@ Java_com_ernesto_pictureupgrader_MainActivity_imgSupResolution(
         cfg.model_path  = std::string(mdir);
         cfg.bg_upsample = true;
         wsdsb::PipeLine pipe;
-        if (pipe.CreatePipeLine(cfg) < 0) {
-            LOGE("SR: CreatePipeLine failed");
-            goto done_sr;
-        }
+        if (pipe.CreatePipeLine(cfg) < 0) { LOGE("CreatePipeLine failed"); goto done_sr; }
 
         write_step("SR: Apply");
         cv::Mat out_image;
         pipe.Apply(resized, out_image);
+        resized.release();
 
         write_step("SR: imwrite");
-        if (out_image.empty()) { LOGE("SR: out_image empty"); goto done_sr; }
-        if (!cv::imwrite(outpath, out_image)) { LOGE("SR: imwrite failed"); goto done_sr; }
+        if (out_image.empty()) { LOGE("out_image empty"); goto done_sr; }
+        cv::imwrite(outpath, out_image);
         result = JNI_TRUE;
         write_step("SR: done");
     }
@@ -128,18 +125,34 @@ Java_com_ernesto_pictureupgrader_MainActivity_imgColouration(
 
     write_step("COL: imread");
     cv::Mat img = cv::imread(imagepath, cv::IMREAD_COLOR);
-    if (img.empty()) { LOGE("COL: imread failed: %s", imagepath); goto done_col; }
-    LOGI("COL: image %dx%d", img.cols, img.rows);
+    if (img.empty()) { LOGE("imread failed"); goto done_col; }
 
     {
+        // Colourisation model (256x256 input) is lightweight,
+        // but output blending needs original size — cap at 1000px
+        write_step("COL: resize");
+        cv::Mat resized;
+        const int LIMIT = 1000;
+        int w = img.cols, h = img.rows;
+        if (w >= h && w > LIMIT) {
+            cv::resize(img, resized, cv::Size(LIMIT, (int)((double)LIMIT/w*h)));
+        } else if (h > w && h > LIMIT) {
+            cv::resize(img, resized, cv::Size((int)((double)LIMIT/h*w), LIMIT));
+        } else {
+            resized = img.clone();
+        }
+        img.release();
+        LOGI("COL: resized to %dx%d", resized.cols, resized.rows);
+
         write_step("COL: colorization()");
         cv::Mat out_image;
-        int ret = colorization(img, out_image, std::string(mdir));
-        if (ret < 0) { LOGE("COL: colorization returned %d", ret); goto done_col; }
+        int ret = colorization(resized, out_image, std::string(mdir));
+        resized.release();
+        if (ret < 0) { LOGE("colorization failed: %d", ret); goto done_col; }
+        if (out_image.empty()) { LOGE("out_image empty"); goto done_col; }
 
         write_step("COL: imwrite");
-        if (out_image.empty()) { LOGE("COL: out_image empty"); goto done_col; }
-        if (!cv::imwrite(outpath, out_image)) { LOGE("COL: imwrite failed"); goto done_col; }
+        cv::imwrite(outpath, out_image);
         result = JNI_TRUE;
         write_step("COL: done");
     }
