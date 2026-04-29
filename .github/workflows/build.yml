@@ -24,42 +24,82 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # ─── INSTALL GRADLE LANGSUNG (bypass gradlew wrapper) ──────────────
       - name: Install Gradle 8.0
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.0'
 
       - name: Install tools
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y unzip wget ninja-build
+        run: sudo apt-get update -q && sudo apt-get install -y unzip wget ninja-build
 
-      # ─── DOWNLOAD OpenCV Android SDK ───────────────────────────────────
       - name: Download OpenCV Android SDK
         run: |
           cd app/src/main/cpp
           wget -q https://github.com/opencv/opencv/releases/download/4.6.0/opencv-4.6.0-android-sdk.zip
           unzip -q opencv-4.6.0-android-sdk.zip
           mv OpenCV-android-sdk opencv-4.6.0-android-sdk
-          echo "OpenCV ready ✓"
 
-      # ─── DOWNLOAD NCNN (Vulkan) ────────────────────────────────────────
       - name: Download NCNN
         run: |
           cd app/src/main/cpp
           wget -q https://github.com/Tencent/ncnn/releases/download/20230816/ncnn-20230816-android-vulkan.zip
           unzip -q ncnn-20230816-android-vulkan.zip
           mv ncnn-20230816-android-vulkan ncnn-custom-android-vulkan
-          echo "NCNN ready ✓"
 
-      # ─── PLACEHOLDER ASSETS ────────────────────────────────────────────
-      - name: Create assets placeholder
+      - name: Download AI Models
         run: |
           mkdir -p app/src/main/assets/models
-          touch app/src/main/assets/models/.gitkeep
+          cd app/src/main/assets/models
 
-      - name: Cache Gradle packages
+          # Face detection — free from nihui/ncnn-assets
+          echo "Downloading SCRFD..."
+          wget --retry-connrefused --waitretry=5 --tries=3 -q \
+            "https://github.com/nihui/ncnn-assets/raw/master/models/scrfd_500m-opt2.param" \
+            -O scrfd_500m-opt2.param
+          wget --retry-connrefused --waitretry=5 --tries=3 -q \
+            "https://github.com/nihui/ncnn-assets/raw/master/models/scrfd_500m-opt2.bin" \
+            -O scrfd_500m-opt2.bin
+
+          # Other models from your own repo release tag "models"
+          BASE="https://github.com/${{ github.repository }}/releases/download/models"
+          for f in \
+            siggraph17_color_sim.param \
+            siggraph17_color_sim.bin \
+            encoder.param \
+            encoder.bin \
+            generator.param \
+            generator.bin \
+            real_esrgan.param \
+            real_esrgan.bin; do
+            echo "Downloading $f..."
+            wget --retry-connrefused --waitretry=5 --tries=3 -q "$BASE/$f" -O "$f"
+          done
+
+          echo ""
+          echo "=== Model file sizes ==="
+          ls -lh
+          echo "========================"
+
+          # Verify minimum sizes — crash if any model is suspiciously small
+          check_size() {
+            local file=$1
+            local min_bytes=$2
+            local actual
+            actual=$(stat -c%s "$file" 2>/dev/null || echo 0)
+            if [ "$actual" -lt "$min_bytes" ]; then
+              echo "ERROR: $file is too small ($actual bytes, expected >= $min_bytes)"
+              exit 1
+            fi
+            echo "OK: $file ($actual bytes)"
+          }
+
+          check_size scrfd_500m-opt2.bin        1000000   # ~4MB
+          check_size siggraph17_color_sim.bin   1000000   # ~125MB  
+          check_size encoder.bin                1000000   # large
+          check_size generator.bin              1000000   # large
+          check_size real_esrgan.bin            1000000   # large
+
+      - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: |
@@ -68,7 +108,6 @@ jobs:
           key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-
 
-      # ─── BUILD PAKAI GRADLE LANGSUNG (bukan ./gradlew) ─────────────────
       - name: Build Debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
