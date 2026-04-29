@@ -46,8 +46,6 @@ jobs:
           unzip -q ncnn-20230816-android-vulkan.zip
           mv ncnn-20230816-android-vulkan ncnn-custom-android-vulkan
 
-      # Use gh CLI (pre-installed on GitHub Actions) to download release assets
-      # gh handles auth + SSL automatically via GITHUB_TOKEN
       - name: Download AI Models
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -55,7 +53,32 @@ jobs:
           mkdir -p app/src/main/assets/models
           cd app/src/main/assets/models
 
-          # Face detection — from nihui/ncnn-assets (public, use wget)
+          REPO="${{ github.repository }}"
+
+          # Debug: list all releases and their tags
+          echo "=== Available releases ==="
+          gh release list --repo "$REPO" --limit 10
+          echo "=========================="
+
+          # Find the correct tag for AI Models release
+          # Try common tag names
+          TAG=""
+          for candidate in models "AI Models" ai-models model v1.0.0; do
+            if gh release view "$candidate" --repo "$REPO" > /dev/null 2>&1; then
+              TAG="$candidate"
+              echo "Found release with tag: $TAG"
+              break
+            fi
+          done
+
+          if [ -z "$TAG" ]; then
+            echo "ERROR: Could not find models release. Available releases listed above."
+            echo "Please create a release with tag 'models' at:"
+            echo "https://github.com/$REPO/releases/new"
+            exit 1
+          fi
+
+          # Face detection — nihui public
           echo "Downloading SCRFD..."
           wget -q --tries=3 \
             "https://github.com/nihui/ncnn-assets/raw/master/models/scrfd_500m-opt2.param" \
@@ -64,8 +87,7 @@ jobs:
             "https://github.com/nihui/ncnn-assets/raw/master/models/scrfd_500m-opt2.bin" \
             -O scrfd_500m-opt2.bin
 
-          # Other models — download from your repo's "models" release via gh CLI
-          REPO="${{ github.repository }}"
+          # Download all other models using found tag
           for f in \
             siggraph17_color_sim.param \
             siggraph17_color_sim.bin \
@@ -76,7 +98,7 @@ jobs:
             real_esrgan.param \
             real_esrgan.bin; do
             echo "Downloading $f..."
-            gh release download models \
+            gh release download "$TAG" \
               --repo "$REPO" \
               --pattern "$f" \
               --output "$f" \
@@ -88,11 +110,10 @@ jobs:
           ls -lh
           echo "========================"
 
-          # Fail build if any critical .bin is suspiciously small
           for f in scrfd_500m-opt2.bin siggraph17_color_sim.bin encoder.bin generator.bin real_esrgan.bin; do
             size=$(stat -c%s "$f" 2>/dev/null || echo 0)
             if [ "$size" -lt 100000 ]; then
-              echo "ERROR: $f is too small ($size bytes) — upload may have failed"
+              echo "ERROR: $f too small ($size bytes)"
               exit 1
             fi
             echo "OK: $f ($size bytes)"
