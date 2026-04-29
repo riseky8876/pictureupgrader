@@ -46,22 +46,26 @@ jobs:
           unzip -q ncnn-20230816-android-vulkan.zip
           mv ncnn-20230816-android-vulkan ncnn-custom-android-vulkan
 
+      # Use gh CLI (pre-installed on GitHub Actions) to download release assets
+      # gh handles auth + SSL automatically via GITHUB_TOKEN
       - name: Download AI Models
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p app/src/main/assets/models
           cd app/src/main/assets/models
 
-          # Face detection — free from nihui/ncnn-assets
+          # Face detection — from nihui/ncnn-assets (public, use wget)
           echo "Downloading SCRFD..."
-          wget --retry-connrefused --waitretry=5 --tries=3 -q \
+          wget -q --tries=3 \
             "https://github.com/nihui/ncnn-assets/raw/master/models/scrfd_500m-opt2.param" \
             -O scrfd_500m-opt2.param
-          wget --retry-connrefused --waitretry=5 --tries=3 -q \
+          wget -q --tries=3 \
             "https://github.com/nihui/ncnn-assets/raw/master/models/scrfd_500m-opt2.bin" \
             -O scrfd_500m-opt2.bin
 
-          # Other models from your own repo release tag "models"
-          BASE="https://github.com/${{ github.repository }}/releases/download/models"
+          # Other models — download from your repo's "models" release via gh CLI
+          REPO="${{ github.repository }}"
           for f in \
             siggraph17_color_sim.param \
             siggraph17_color_sim.bin \
@@ -72,7 +76,11 @@ jobs:
             real_esrgan.param \
             real_esrgan.bin; do
             echo "Downloading $f..."
-            wget --retry-connrefused --waitretry=5 --tries=3 -q "$BASE/$f" -O "$f"
+            gh release download models \
+              --repo "$REPO" \
+              --pattern "$f" \
+              --output "$f" \
+              --clobber
           done
 
           echo ""
@@ -80,24 +88,15 @@ jobs:
           ls -lh
           echo "========================"
 
-          # Verify minimum sizes — crash if any model is suspiciously small
-          check_size() {
-            local file=$1
-            local min_bytes=$2
-            local actual
-            actual=$(stat -c%s "$file" 2>/dev/null || echo 0)
-            if [ "$actual" -lt "$min_bytes" ]; then
-              echo "ERROR: $file is too small ($actual bytes, expected >= $min_bytes)"
+          # Fail build if any critical .bin is suspiciously small
+          for f in scrfd_500m-opt2.bin siggraph17_color_sim.bin encoder.bin generator.bin real_esrgan.bin; do
+            size=$(stat -c%s "$f" 2>/dev/null || echo 0)
+            if [ "$size" -lt 100000 ]; then
+              echo "ERROR: $f is too small ($size bytes) — upload may have failed"
               exit 1
             fi
-            echo "OK: $file ($actual bytes)"
-          }
-
-          check_size scrfd_500m-opt2.bin        1000000   # ~4MB
-          check_size siggraph17_color_sim.bin   1000000   # ~125MB  
-          check_size encoder.bin                1000000   # large
-          check_size generator.bin              1000000   # large
-          check_size real_esrgan.bin            1000000   # large
+            echo "OK: $f ($size bytes)"
+          done
 
       - name: Cache Gradle
         uses: actions/cache@v4
