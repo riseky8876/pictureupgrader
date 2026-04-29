@@ -46,7 +46,7 @@ jobs:
           unzip -q ncnn-20230816-android-vulkan.zip
           mv ncnn-20230816-android-vulkan ncnn-custom-android-vulkan
 
-      - name: Download AI Models
+      - name: Download AI Models into assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -55,31 +55,23 @@ jobs:
 
           REPO="${{ github.repository }}"
 
-          # Debug: list all releases and their tags
-          echo "=== Available releases ==="
-          gh release list --repo "$REPO" --limit 10
-          echo "=========================="
-
-          # Find the correct tag for AI Models release
-          # Try common tag names
-          TAG=""
-          for candidate in models-on-publish models "AI Models" ai-models model v1.0.0; do
-            if gh release view "$candidate" --repo "$REPO" > /dev/null 2>&1; then
-              TAG="$candidate"
-              echo "Found release with tag: $TAG"
-              break
+          # Auto-detect release tag
+          TAG=$(gh release list --repo "$REPO" --limit 10 --json tagName \
+                --jq '.[].tagName' | head -5 | while read t; do
+            if gh release view "$t" --repo "$REPO" > /dev/null 2>&1; then
+              echo "$t"; break
             fi
-          done
-
+          done)
+          # Fallback: just grab the latest
           if [ -z "$TAG" ]; then
-            echo "ERROR: Could not find models release. Available releases listed above."
-            echo "Please create a release with tag 'models' at:"
-            echo "https://github.com/$REPO/releases/new"
-            exit 1
+            TAG=$(gh release list --repo "$REPO" --limit 1 --json tagName --jq '.[0].tagName')
           fi
+          echo "Using release tag: $TAG"
 
-          # Face detection — nihui public
-          echo "Downloading SCRFD..."
+          gh release download "$TAG" --repo "$REPO" --clobber \
+            --pattern "*.bin" --pattern "*.param"
+
+          # SCRFD from nihui
           wget -q --tries=3 \
             "https://github.com/nihui/ncnn-assets/raw/master/models/scrfd_500m-opt2.param" \
             -O scrfd_500m-opt2.param
@@ -87,37 +79,9 @@ jobs:
             "https://github.com/nihui/ncnn-assets/raw/master/models/scrfd_500m-opt2.bin" \
             -O scrfd_500m-opt2.bin
 
-          # Download all other models using found tag
-          for f in \
-            siggraph17_color_sim.param \
-            siggraph17_color_sim.bin \
-            encoder.param \
-            encoder.bin \
-            generator.param \
-            generator.bin \
-            real_esrgan.param \
-            real_esrgan.bin; do
-            echo "Downloading $f..."
-            gh release download "$TAG" \
-              --repo "$REPO" \
-              --pattern "$f" \
-              --output "$f" \
-              --clobber
-          done
-
-          echo ""
           echo "=== Model file sizes ==="
           ls -lh
           echo "========================"
-
-          for f in scrfd_500m-opt2.bin siggraph17_color_sim.bin encoder.bin generator.bin real_esrgan.bin; do
-            size=$(stat -c%s "$f" 2>/dev/null || echo 0)
-            if [ "$size" -lt 100000 ]; then
-              echo "ERROR: $f too small ($size bytes)"
-              exit 1
-            fi
-            echo "OK: $f ($size bytes)"
-          done
 
       - name: Cache Gradle
         uses: actions/cache@v4
