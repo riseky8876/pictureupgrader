@@ -148,7 +148,5 @@ int RealESRGAN::Process(const cv::Mat& input_img, void* result) {
     return 0;
 }
 
-void RealESRGAN::generateAndInsertProposals(const std::vector<float>&, int,
-        const Tensor_t&, const ncnn::Mat&, float, std::vector<Object_t>&) {}
 
 } // namespace wsdsb
